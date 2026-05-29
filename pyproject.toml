@@ -1,10 +1,28 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "video-cataloguer"
 version = "0.1.0"
-description = "Add your description here"
+description = "TUI tool to catalogue video files with transcripts, frame descriptions, and metadata"
 readme = "README.md"
 requires-python = ">=3.14"
-dependencies = []
+dependencies = [
+    "textual>=6.0.0",
+    "ffmpeg-python>=0.2.0",
+    "openai-whisper>=20250625",
+    "Pillow>=11.0.0",
+    "httpx>=0.28.0",
+    "click>=8.1.0",
+    "pydantic>=2.10.0",
+]
+
+[project.scripts]
+video-cataloguer = "video_cataloguer.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/video_cataloguer"]
 
 [tool.ruff]
 line-length = 100

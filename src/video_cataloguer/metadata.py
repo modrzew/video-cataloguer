@@ -1,0 +1,99 @@
+from __future__ import annotations
+
+import json
+import logging
+import subprocess
+from pathlib import Path
+
+from video_cataloguer.models import VideoMetadata
+
+logger = logging.getLogger(__name__)
+
+
+def extract_metadata(video_path: Path) -> VideoMetadata:
+    """Run ffprobe on *video_path* and return structured metadata."""
+    probe = _run_ffprobe(video_path)
+    stream = _find_video_stream(probe)
+    format_data = probe.get("format", {})
+
+    duration = float(format_data.get("duration", 0))
+    file_size = int(format_data.get("size", 0))
+
+    # Try to get recording date from tags
+    tags = format_data.get("tags", {})
+    recording_date = tags.get("creation_time") or tags.get("date") or None
+
+    # GPS from tags (if embedded)
+    gps_lat = _parse_gps(tags.get("tdef1"))
+    gps_lon = _parse_gps(tags.get("tdef2"))
+
+    width = int(stream.get("width", 0))
+    height = int(stream.get("height", 0))
+    fps_raw = stream.get("r_frame_rate", "0/1")
+    fps = _parse_fps(fps_raw)
+
+    video_codec = stream.get("codec_name", "unknown")
+
+    # Find audio stream
+    audio_codec = "none"
+    for s in probe.get("streams", []):
+        if s.get("codec_type") == "audio":
+            audio_codec = s.get("codec_name", "unknown")
+            break
+
+    return VideoMetadata(
+        file_path=str(video_path),
+        duration_seconds=duration,
+        width=width,
+        height=height,
+        fps=fps,
+        video_codec=video_codec,
+        audio_codec=audio_codec,
+        file_size_bytes=file_size,
+        recording_date=recording_date,
+        gps_latitude=gps_lat,
+        gps_longitude=gps_lon,
+    )
+
+
+def _run_ffprobe(video_path: Path) -> dict:
+    """Run ffprobe and return parsed JSON."""
+    cmd = [
+        "ffprobe",
+        "-v",
+        "quiet",
+        "-print_format",
+        "json",
+        "-show_format",
+        "-show_streams",
+        str(video_path),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    return json.loads(result.stdout)
+
+
+def _find_video_stream(probe: dict) -> dict:
+    """Return the first video stream from ffprobe output."""
+    for stream in probe.get("streams", []):
+        if stream.get("codec_type") == "video":
+            return stream
+    raise ValueError(f"No video stream found in {probe.get('format', {}).get('filename', '?')}")
+
+
+def _parse_fps(fps_str: str) -> float:
+    """Parse a fraction string like '30000/1001' into a float."""
+    try:
+        num, den = fps_str.split("/")
+        return float(num) / float(den)
+    except ValueError, ZeroDivisionError:
+        return 0.0
+
+
+def _parse_gps(value: str | None) -> float | None:
+    """Try to parse a GPS coordinate string to float."""
+    if not value:
+        return None
+    try:
+        return float(value)
+    except ValueError, TypeError:
+        return None

@@ -53,7 +53,6 @@ class CataloguerApp(App):
     }
 
     #video-list {
-        height: 1fr;
         border: solid $accent;
         padding: 1;
     }

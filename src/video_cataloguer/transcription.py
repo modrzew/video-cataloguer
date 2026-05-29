@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 _MODEL_CACHE: dict[str, whisper.Whisper] = {}
 
 
-def transcribe(video_path: Path, model_name: str = "tiny") -> Transcript:
+def transcribe(video_path: Path, model_name: str = "large") -> Transcript:
     """Extract audio from *video_path* and transcribe it with Whisper."""
     model = _load_model(model_name)
 

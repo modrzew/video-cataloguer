@@ -24,8 +24,8 @@ from video_cataloguer.tui import CataloguerApp
 @click.option(
     "--whisper-model",
     type=click.Choice(["tiny", "base", "small", "medium", "large"]),
-    default="tiny",
-    help="Whisper model size for transcription (default: tiny).",
+    default="large",
+    help="Whisper model size for transcription (default: large).",
 )
 @click.option(
     "--llm-provider",

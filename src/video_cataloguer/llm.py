@@ -21,8 +21,8 @@ PROVIDER_DEFAULTS = {
     },
     "lmstudio": {
         "base_url": "http://localhost:1234",
-        "vision_model": "qwen3.6-27b-mtp",
-        "summary_model": "qwen3.6-27b-mtp",
+        "vision_model": "qwen3.6-35b-a3b-mtp",
+        "summary_model": "qwen3.6-35b-a3b-mtp",
     },
 }
 

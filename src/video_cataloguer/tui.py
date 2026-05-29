@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from textual.app import App, ComposeResult
 from textual.containers import Container
-from textual.widgets import Footer, Header, Label, Log, Rule
+from textual.widgets import Footer, Header, Label, Log, RichLog, Rule
 
 from video_cataloguer.discovery import discover_videos
 from video_cataloguer.pipeline import process_videos
@@ -21,18 +21,6 @@ class VideoProgress:
     name: str
     status: str = "pending"  # pending | processing | done | error
     detail: str = ""
-
-
-class VideoList(Log):
-    """Log widget that shows per-video progress."""
-
-    DEFAULT_CSS = """
-    VideoList {
-        height: 1fr;
-        border: solid $accent;
-        padding: 1;
-    }
-"""
 
 
 class StatusBanner(Label):
@@ -62,6 +50,12 @@ class CataloguerApp(App):
     .main-container {
         height: 1fr;
         layout: vertical;
+    }
+
+    #video-list {
+        height: 1fr;
+        border: solid $accent;
+        padding: 1;
     }
 """
 
@@ -98,7 +92,7 @@ class CataloguerApp(App):
         yield Header()
         yield StatusBanner("Discovering videos...", id="status-banner")
         with Container(id="main-container"):
-            yield VideoList(id="video-list")
+            yield RichLog(id="video-list", markup=True)
             yield Rule()
             yield Log(id="details-log")
         yield Footer()
@@ -122,13 +116,13 @@ class CataloguerApp(App):
 
     async def _run_pipeline(self) -> None:
         banner = self.query_one("#status-banner", StatusBanner)
-        video_list = self.query_one("#video-list", VideoList)
+        video_list = self.query_one("#video-list", RichLog)
 
         try:
             # Discover
             discovered = discover_videos(self.folder)
             self.videos = [VideoProgress(name=v.name) for v in discovered]
-            video_list.write(f"[bold]{len(self.videos)} video(s) found[/]\n")
+            video_list.write(f"[bold]{len(self.videos)} video(s) found\n")
             banner.update(f"Processing {len(self.videos)} video(s)...")
 
             def progress_callback(
@@ -166,16 +160,16 @@ class CataloguerApp(App):
             )
 
             banner.update(f"Done! Processed {len(self.videos)} video(s).")
-            video_list.write("\n[bold green]All done![/]")
+            video_list.write("[bold green]All done![/]")
 
         except Exception as e:
             banner.update(f"Error: {e}")
-            video_list.write(f"\n[red]Processing failed: {e}[/]")
+            video_list.write(f"[red]Processing failed: {e}[/]")
             logger.error("Pipeline failed: %s", e, exc_info=True)
 
     def _refresh_video_list(self) -> None:
         """Update the video list widget with current progress."""
-        video_list = self.query_one("#video-list", VideoList)
+        video_list = self.query_one("#video-list", RichLog)
         video_list.clear()
 
         for vp in self.videos:

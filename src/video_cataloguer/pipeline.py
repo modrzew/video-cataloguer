@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import logging
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from video_cataloguer.discovery import discover_videos
@@ -27,7 +27,7 @@ def process_single_video(
 ) -> VideoCatalogEntry:
     """Process one video: metadata → transcript → frames → descriptions → summary.
 
-    Runs synchronously so it can be called from a ProcessPoolExecutor.
+    Runs synchronously so it can be called from a thread executor.
     """
     # Configure the LLM provider in this worker process
     configure(provider=llm_provider, base_url=llm_base_url)
@@ -82,8 +82,8 @@ async def process_videos(
 ) -> list[VideoCatalogEntry]:
     """Process all videos in *folder* with bounded concurrency.
 
-    Each video is processed in a separate process to avoid GIL contention
-    during Whisper inference. Results are saved as Markdown files.
+    Each video is processed in a separate thread. Results are saved as
+    Markdown files.
     """
     videos = discover_videos(folder)
     total = len(videos)
@@ -96,7 +96,7 @@ async def process_videos(
         progress_callback(total, "discovering")
 
     loop = asyncio.get_event_loop()
-    executor = ProcessPoolExecutor(max_workers=max_concurrency)
+    executor = ThreadPoolExecutor(max_workers=max_concurrency)
     semaphore = asyncio.Semaphore(max_concurrency)
     results: list[VideoCatalogEntry] = []
     completed = 0

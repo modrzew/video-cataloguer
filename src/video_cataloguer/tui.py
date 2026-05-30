@@ -63,6 +63,10 @@ class CataloguerApp(App):
         ("d", "details", "Toggle Details"),
     ]
 
+    # Disable built-in command palette and theme switching
+    command_palette_enabled = False
+    theme_switcher_enabled = False
+
     def __init__(
         self,
         folder: str,
@@ -185,6 +189,12 @@ class CataloguerApp(App):
         self.show_details = not self.show_details
         log = self.query_one("#details-log", Log)
         log.display = self.show_details
+
+    def action_command_palette(self) -> None:
+        pass
+
+    def action_change_theme(self) -> None:
+        pass
 
 
 class _TextualLogHandler(logging.Handler):

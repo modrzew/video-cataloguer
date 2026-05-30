@@ -1,39 +1,35 @@
 from __future__ import annotations
 
+import json
 import logging
+import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
-import whisper  # type: ignore[import-untyped]
 from tqdm import tqdm as tqdm_class  # type: ignore[import-untyped]
 
 from video_cataloguer.models import Transcript, TranscriptSegment
 
 logger = logging.getLogger(__name__)
 
-_MODEL_CACHE: dict[str, whisper.Whisper] = {}
-
 
 def transcribe(video_path: Path, model_name: str = "large") -> Transcript:
-    """Extract audio from *video_path* and transcribe it with Whisper."""
-    model = _load_model(model_name)
+    """Extract audio from *video_path* and transcribe it with Whisper.
 
-    # Whisper can transcribe video files directly, but extracting audio first
-    # is more reliable and avoids issues with certain codecs.
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as audio_file:
-        _extract_audio(video_path, Path(audio_file.name))
-        # Disable tqdm to avoid multiprocessing lock issues when fork() is
-        # called from a process with extra open file descriptors (e.g. TUI).
-        # Use hasattr/guard — some environments (e.g. textual) may resolve
-        # `tqdm` to a different class lacking the `disable` attribute.
-        if hasattr(tqdm_class, "disable"):
-            disabled = tqdm_class.disable
-            tqdm_class.disable = True
-        try:
-            result = model.transcribe(audio_file.name, verbose=False)
-        finally:
-            if hasattr(tqdm_class, "disable"):
-                tqdm_class.disable = disabled
+    Runs Whisper in a subprocess so that PyTorch's internal fork() never
+    inherits the TUI's extra file descriptors (the "bad value in fds_to_keep"
+    crash).
+    """
+    # Extract audio first (ffmpeg, no fork issue).  delete=False so the
+    # subprocess can access the file after the context manager closes it.
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as audio_file:
+        audio_path = audio_file.name
+    try:
+        _extract_audio(video_path, Path(audio_path))
+        result = _run_transcribe_subprocess(audio_path, model_name)
+    finally:
+        Path(audio_path).unlink(missing_ok=True)
 
     segments = [
         TranscriptSegment(start=s["start"], end=s["end"], text=s["text"].strip())
@@ -44,12 +40,54 @@ def transcribe(video_path: Path, model_name: str = "large") -> Transcript:
     return Transcript(segments=segments)
 
 
-def _load_model(model_name: str) -> whisper.Whisper:
-    """Load (or cache) a Whisper model."""
-    if model_name not in _MODEL_CACHE:
-        logger.info("Loading Whisper model: %s", model_name)
-        _MODEL_CACHE[model_name] = whisper.load_model(model_name)
-    return _MODEL_CACHE[model_name]
+def _run_transcribe_subprocess(audio_path: str, model_name: str) -> dict:
+    """Run Whisper transcription in a clean subprocess with no inherited FDs.
+
+    Uses a temp file for the result so that PyTorch/Whisper stdout noise
+    cannot corrupt the JSON output.
+    """
+    # Create a temp file for the subprocess to write its JSON result into.
+    # delete=False so it persists after we close it.
+    with tempfile.NamedTemporaryFile(
+        suffix=".json", prefix="whisper_result_", delete=False
+    ) as result_file:
+        result_path = result_file.name
+    # result_file is closed here; subprocess will open it for writing.
+
+    script = (
+        f"from video_cataloguer.transcription import _transcribe_worker\n"
+        f"import json\n"
+        f"result = _transcribe_worker({audio_path!r}, {model_name!r})\n"
+        f"with open({result_path!r}, 'w') as f:\n"
+        f"    json.dump(result, f)\n"
+    )
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(f"Whisper subprocess failed (exit {proc.returncode}): {proc.stderr}")
+        with open(result_path) as f:
+            return json.loads(f.read())
+    finally:
+        Path(result_path).unlink(missing_ok=True)
+
+
+def _transcribe_worker(audio_path: str, model_name: str) -> dict:
+    """Worker run inside the subprocess — loads model and transcribes."""
+    import whisper  # type: ignore[import-untyped]
+
+    model = whisper.load_model(model_name)
+    # Disable tqdm to avoid any progress output leaking to the TUI.
+    if hasattr(tqdm_class, "disable"):
+        tqdm_class.disable = True
+    try:
+        return model.transcribe(audio_path, verbose=False)
+    finally:
+        if hasattr(tqdm_class, "disable"):
+            tqdm_class.disable = False
 
 
 def _extract_audio(video_path: Path, output_path: Path) -> None:

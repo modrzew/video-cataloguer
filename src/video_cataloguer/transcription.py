@@ -5,6 +5,7 @@ import tempfile
 from pathlib import Path
 
 import whisper  # type: ignore[import-untyped]
+from tqdm import tqdm as tqdm_class  # type: ignore[import-untyped]
 
 from video_cataloguer.models import Transcript, TranscriptSegment
 
@@ -21,7 +22,18 @@ def transcribe(video_path: Path, model_name: str = "large") -> Transcript:
     # is more reliable and avoids issues with certain codecs.
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as audio_file:
         _extract_audio(video_path, Path(audio_file.name))
-        result = model.transcribe(audio_file.name, verbose=False)
+        # Disable tqdm to avoid multiprocessing lock issues when fork() is
+        # called from a process with extra open file descriptors (e.g. TUI).
+        # Use hasattr/guard — some environments (e.g. textual) may resolve
+        # `tqdm` to a different class lacking the `disable` attribute.
+        if hasattr(tqdm_class, "disable"):
+            disabled = tqdm_class.disable
+            tqdm_class.disable = True
+        try:
+            result = model.transcribe(audio_file.name, verbose=False)
+        finally:
+            if hasattr(tqdm_class, "disable"):
+                tqdm_class.disable = disabled
 
     segments = [
         TranscriptSegment(start=s["start"], end=s["end"], text=s["text"].strip())

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from dataclasses import dataclass
 
 from textual.app import App, ComposeResult
-from textual.containers import Container
 from textual.widgets import Footer, Header, Label, Log, RichLog, Rule
 
 from video_cataloguer.discovery import discover_videos
@@ -42,19 +42,19 @@ class CataloguerApp(App):
 
     CSS = """
     Screen {
-        layout: grid;
-        grid-size: 1;
-        grid-gutter: 1;
-    }
-
-    .main-container {
-        height: 1fr;
         layout: vertical;
     }
 
     #video-list {
+        height: 1fr;
         border: solid $accent;
         padding: 1;
+    }
+
+    #details-log {
+        height: 1fr;
+        text-wrap: wrap;
+        max-width: 100%;
     }
 """
 
@@ -90,10 +90,9 @@ class CataloguerApp(App):
     def compose(self) -> ComposeResult:
         yield Header()
         yield StatusBanner("Discovering videos...", id="status-banner")
-        with Container(id="main-container"):
-            yield RichLog(id="video-list", markup=True)
-            yield Rule()
-            yield Log(id="details-log")
+        yield RichLog(id="video-list", markup=True)
+        yield Rule()
+        yield Log(id="details-log")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -189,7 +188,11 @@ class CataloguerApp(App):
 
 
 class _TextualLogHandler(logging.Handler):
-    """Routes Python log records to a Textual Log widget."""
+    """Routes Python log records to a Textual Log widget.
+
+    Log writes must happen on the Textual main thread, so we delegate
+    through `call_from_thread` when called from worker threads.
+    """
 
     def __init__(self, app: CataloguerApp) -> None:
         super().__init__()
@@ -197,8 +200,9 @@ class _TextualLogHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         msg = self.format(record)
-        try:
-            log = self.app.query_one("#details-log", Log)
-            log.write(msg)
-        except Exception:
-            pass  # Widget may not exist yet
+        with contextlib.suppress(Exception):
+            self.app.call_from_thread(self._write_log, msg)
+
+    def _write_log(self, msg: str) -> None:
+        log = self.app.query_one("#details-log", Log)
+        log.write(msg + "\n")

@@ -6,6 +6,10 @@
 - **Type check:** `uv run ty check`
 - **Pre-commit (all checks):** `uv run pre-commit run --all-files`
 
+# After every code change
+
+Run `uv run ty check` and `uv run ruff check`. These will also be run as pre-commit hooks.
+
 # Architecture
 
 - **Package:** `src/video_cataloguer` (src layout, hatch builds from `src/video_cataloguer`)
@@ -16,7 +20,5 @@
 
 # Gotchas
 
-- Requires Python **3.14+**. The `.python-version` and `pyproject.toml` enforce this.
-- `ty` is the type checker (not mypy or pyright). Run it with `uv run ty check`.
-- `ruff` handles both linting and formatting (no separate black/isort).
-- No test suite exists yet.
+- Whisper must run in its own subprocess: in-process, PyTorch's fork() inherits the TUI's file descriptors and crashes ("bad value in fds_to_keep"). Don't inline it.
+- Treat model/LLM output as untrusted text: request a parseable structure and handle mismatches explicitly.

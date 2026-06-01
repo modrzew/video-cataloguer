@@ -287,6 +287,7 @@ class CataloguerApp(App):
                 vision_model=self.vision_model,
                 summary_model=self.summary_model,
                 progress_callback=progress_callback,
+                videos=discovered,
             )
 
             banner.update(f"Done! Processed {len(self.videos)} video(s).")

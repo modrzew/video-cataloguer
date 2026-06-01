@@ -20,8 +20,6 @@ logger = logging.getLogger(__name__)
 def process_single_video(
     video_path: Path,
     whisper_model: str = "large",
-    llm_provider: str = "ollama",
-    llm_base_url: str | None = None,
     vision_model: str | None = None,
     summary_model: str | None = None,
     total_steps: int = 0,
@@ -31,12 +29,14 @@ def process_single_video(
 
     Runs synchronously so it can be called from a thread executor.
 
+    The LLM provider must be configured (via ``llm.configure()``) before
+    calling this function — it runs in a worker thread that shares the
+    main process memory.
+
     *total_steps* is the expected step count (computed by the caller).
     *progress_callback* is called as ``(phase, current_step, total_steps)``.
     Phases: "transcribing", "describing_frames", "generating_summary".
     """
-    # Configure the LLM provider in this worker process
-    configure(provider=llm_provider, base_url=llm_base_url)
 
     name = video_path.name
     step = 0
@@ -97,14 +97,18 @@ async def process_videos(
     vision_model: str | None = None,
     summary_model: str | None = None,
     progress_callback: Callable[..., None] | None = None,
+    videos: list[Path] | None = None,
 ) -> list[VideoCatalogEntry]:
     """Process all videos in *folder* with bounded concurrency.
 
     Each video is processed in a separate thread. Results are saved as
     Markdown files incrementally — each video is saved as soon as it
     finishes so a crash doesn't lose completed work.
+
+    If *videos* is provided, skip discovery and use the supplied list.
     """
-    videos = discover_videos(folder)
+    if videos is None:
+        videos = discover_videos(folder)
     total = len(videos)
 
     if total == 0:
@@ -119,6 +123,9 @@ async def process_videos(
 
     if progress_callback:
         progress_callback(total, "discovering", steps_map=video_steps)
+
+    # Configure LLM once in the main thread; worker threads share process memory.
+    configure(provider=llm_provider, base_url=llm_base_url)
 
     loop = asyncio.get_running_loop()
     executor = ThreadPoolExecutor(max_workers=max_concurrency)
@@ -159,8 +166,6 @@ async def process_videos(
                     process_single_video,
                     video,
                     whisper_model,
-                    llm_provider,
-                    llm_base_url,
                     vision_model,
                     summary_model,
                     steps,

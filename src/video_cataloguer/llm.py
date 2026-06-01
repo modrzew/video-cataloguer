@@ -5,7 +5,7 @@ import io
 import json
 import logging
 import re
-from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -47,8 +47,13 @@ def configure(provider: str = "ollama", base_url: str | None = None) -> None:
 def describe_frames(
     frames: list[tuple[float, Any]],
     model: str | None = None,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> list[FrameDescription]:
-    """Send extracted frames to a vision model and get descriptions."""
+    """Send extracted frames to a vision model and get descriptions.
+
+    *progress_callback* is called after each frame is described as
+    ``(current_frame_1_based, total_frames)``.
+    """
     if model is None:
         model = PROVIDER_DEFAULTS[_provider]["vision_model"]
 
@@ -59,37 +64,42 @@ def describe_frames(
         batch = frames[i : i + batch_size]
         try:
             result = _vision_request(model, batch)
-            for (ts, _img), desc in zip(batch, result, strict=True):
+            for _idx, ((ts, _img), desc) in enumerate(zip(batch, result, strict=True)):
                 descriptions.append(FrameDescription(timestamp=ts, description=desc))
+                if progress_callback:
+                    progress_callback(len(descriptions), len(frames))
         except Exception as e:
             logger.error("Frame description failed at %.1fs: %s", batch[0][0], e)
             for ts, _img in batch:
                 descriptions.append(
                     FrameDescription(timestamp=ts, description="Failed to describe frame.")
                 )
+                if progress_callback:
+                    progress_callback(len(descriptions), len(frames))
 
     logger.info("Described %d frames", len(descriptions))
     return descriptions
 
 
 def generate_summary(
-    video_path: str,
-    metadata: dict,
-    transcript: Transcript,
     frame_descriptions: list[FrameDescription],
+    transcript: Transcript,
     model: str | None = None,
 ) -> str:
-    """Generate a Markdown summary of the video using a local LLM."""
+    """Generate a factual summary paragraph of the video using a local LLM.
+
+    Returns only the summary text — the caller composes the full Markdown document.
+    """
     if model is None:
         model = PROVIDER_DEFAULTS[_provider]["summary_model"]
 
-    prompt = _build_summary_prompt(video_path, metadata, transcript, frame_descriptions)
+    prompt = _build_summary_prompt(frame_descriptions, transcript)
 
     try:
         return _text_request(model, prompt)
     except Exception as e:
-        logger.error("Summary generation failed for %s: %s", video_path, e)
-        return _fallback_summary(video_path, metadata, transcript, frame_descriptions)
+        logger.error("Summary generation failed: %s", e)
+        return _fallback_summary(frame_descriptions, transcript)
 
 
 # --- Shared frame encoding ---
@@ -113,9 +123,15 @@ def _build_vision_prompt(frames: list[tuple[float, Any]]) -> str:
     """Build the vision prompt shared by all providers."""
     timestamps = [ts for ts, _ in frames]
     return (
-        "You are describing video frames. For each image provided, give a concise "
-        "one-sentence description of what is visible. Return exactly one description "
-        "per image, in order. Output a JSON array of strings, one per frame.\n\n"
+        "You are describing video frames for a video cataloguing tool. "
+        "For each image provided, give a concise one-sentence description of "
+        "what is visibly present — objects, people, setting, actions. "
+        "Do not interpret emotions, intentions, relationships, or mood. "
+        "Do not use adjectives like candid, lighthearted, playful, dramatic, "
+        "tense, joyful, somber, or similar interpretive language. "
+        "Stick to observable facts only. "
+        "Return exactly one description per image, in order. "
+        "Output a JSON array of strings, one per frame.\n\n"
         f"There are {len(frames)} frames from timestamps: "
         f"{', '.join(f'{t:.1f}s' for t in timestamps)}."
     )
@@ -273,37 +289,23 @@ def _split_descriptions(content: str, count: int) -> list[str]:
 
 
 def _build_summary_prompt(
-    video_path: str,
-    metadata: dict,
-    transcript: Transcript,
     frame_descriptions: list[FrameDescription],
+    transcript: Transcript,
 ) -> str:
-    """Build the prompt for the summary generation LLM call."""
+    """Build the prompt for the summary generation LLM call.
+
+    The LLM only produces the summary paragraph — metadata and transcript
+    sections are composed by Python code.
+    """
     frame_text = "\n".join(
         f"- [{_format_time(f.timestamp)}] {f.description}" for f in frame_descriptions
     )
 
-    return f"""You are a video cataloguer. Create a Markdown document describing
-the following video.
+    return f"""You are writing a video summary for a cataloguing tool.
 
-## Video Information
-- File: {Path(video_path).name}
-- Duration: {_fmt_duration(metadata.get("duration_seconds", 0))}
-- Resolution: {metadata.get("width", "?")}x{metadata.get("height", "?")}
-- FPS: {metadata.get("fps", "?")}
-- Video codec: {metadata.get("video_codec", "?")}
-- Audio codec: {metadata.get("audio_codec", "?")}
-- File size: {_fmt_size(metadata.get("file_size_bytes", 0))}
-{
-        f"- Recording date: {metadata.get('recording_date', 'N/A')}"
-        if metadata.get("recording_date")
-        else ""
-    }
-{
-        f"- Location: {metadata.get('gps_latitude', '?')}, {metadata.get('gps_longitude', '?')}"
-        if metadata.get("gps_latitude")
-        else ""
-    }
+Below are frame-by-frame visual descriptions and the full audio transcript
+of a video. Write a single concise summary paragraph describing what is
+visually and audibly present.
 
 ## Key Frame Descriptions
 {frame_text}
@@ -313,56 +315,20 @@ the following video.
 
 ---
 
-Please produce a Markdown document with the following structure:
-
-1. A title line with the video filename
-2. A **Metadata** section with the extracted metadata
-3. A **Summary** section describing what the video is about, who/what is shown,
-   and the scenery
-4. A **Transcript** section with the full timestamped transcript
-
-Be concise but informative in the Summary section. Use the frame descriptions
-to ground your description of what is visually present."""
+Rules:
+- Describe what can be observed: who/what appears, the setting, physical
+  actions, and what is said.
+- Do not interpret emotions, intentions, relationships, or the nature of
+  any interaction. Avoid words like candid, lighthearted, playful, tense,
+  joyful, somber, dramatic, or similar interpretive language.
+- Do not guess at context beyond what is directly visible or audible.
+- Return only the summary paragraph. Do not include headings, metadata,
+  or the transcript."""
 
 
 def _fallback_summary(
-    video_path: str,
-    metadata: dict,
-    transcript: Transcript,
     frame_descriptions: list[FrameDescription],
+    transcript: Transcript,
 ) -> str:
-    """Return a basic Markdown summary when the LLM is unavailable."""
-    lines = [
-        f"# {Path(video_path).name}",
-        "",
-        "## Metadata",
-        f"- Duration: {_fmt_duration(metadata.get('duration_seconds', 0))}",
-        f"- Resolution: {metadata.get('width', '?')}x{metadata.get('height', '?')}",
-        f"- File size: {_fmt_size(metadata.get('file_size_bytes', 0))}",
-        "",
-        "## Summary",
-        "LLM summary unavailable. The LLM service was not reachable.",
-        "",
-        "## Transcript",
-        transcript.to_timestamped_text(),
-    ]
-    return "\n".join(lines)
-
-
-def _fmt_duration(seconds: float) -> str:
-    """Format seconds as HH:MM:SS."""
-    hours, remainder = divmod(seconds, 3600)
-    minutes, secs = divmod(remainder, 60)
-    if hours > 0:
-        return f"{int(hours):02d}:{int(minutes):02d}:{int(secs):02d}"
-    return f"{int(minutes):02d}:{int(secs):02d}"
-
-
-def _fmt_size(bytes_: int) -> str:
-    """Format bytes as human-readable size."""
-    size = float(bytes_)
-    for unit in ("B", "KB", "MB", "GB", "TB", "PB"):
-        if size < 1024:
-            return f"{size:.1f} {unit}"
-        size /= 1024
-    return f"{size:.1f} EB"
+    """Return a fallback summary text when the LLM is unavailable."""
+    return "Summary unavailable — LLM service was not reachable."

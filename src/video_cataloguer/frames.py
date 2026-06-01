@@ -14,6 +14,14 @@ MAX_FRAMES = 30
 FRAME_SIZE = (320, 240)  # Scale down for LLM vision input
 
 
+def get_frame_count(video_path: Path, max_frames: int = MAX_FRAMES) -> int:
+    """Return the number of frames that would be extracted from *video_path*."""
+    duration = _get_duration(video_path)
+    if duration <= 0:
+        return 0
+    return min(max_frames, max(1, int(duration / 10)))
+
+
 def extract_frames(
     video_path: Path,
     max_frames: int = MAX_FRAMES,

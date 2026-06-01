@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-import dataclasses
 import logging
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from video_cataloguer.discovery import discover_videos
-from video_cataloguer.frames import extract_frames
+from video_cataloguer.frames import extract_frames, get_frame_count
 from video_cataloguer.llm import configure, describe_frames, generate_summary
 from video_cataloguer.metadata import extract_metadata
 from video_cataloguer.models import VideoCatalogEntry
@@ -25,41 +24,59 @@ def process_single_video(
     llm_base_url: str | None = None,
     vision_model: str | None = None,
     summary_model: str | None = None,
+    total_steps: int = 0,
+    progress_callback: Callable[[str, int, int], None] | None = None,
 ) -> VideoCatalogEntry:
     """Process one video: metadata → transcript → frames → descriptions → summary.
 
     Runs synchronously so it can be called from a thread executor.
+
+    *total_steps* is the expected step count (computed by the caller).
+    *progress_callback* is called as ``(phase, current_step, total_steps)``.
+    Phases: "transcribing", "describing_frames", "generating_summary".
     """
     # Configure the LLM provider in this worker process
     configure(provider=llm_provider, base_url=llm_base_url)
 
     name = video_path.name
+    step = 0
+
+    def _report(phase: str) -> None:
+        nonlocal step
+        step += 1
+        if progress_callback:
+            progress_callback(phase, step, total_steps)
+
     logger.info("[%s] Extracting metadata", name)
     metadata = extract_metadata(video_path)
 
     logger.info("[%s] Transcribing audio (model: %s)", name, whisper_model)
     transcript = transcribe(video_path, model_name=whisper_model)
+    _report("transcribing")
 
     logger.info("[%s] Extracting frames", name)
     frames = extract_frames(video_path)
 
     if frames:
-        logger.info("[%s] Describing frames", name)
-        frame_descriptions = describe_frames(frames, model=vision_model)
+        logger.info("[%s] Describing frames (%d frames)", name, len(frames))
+
+        def _frame_progress(current: int, total: int) -> None:
+            logger.info("[%s] Describing frame %d/%d", name, current, total)
+            _report("describing_frames")
+
+        frame_descriptions = describe_frames(
+            frames, model=vision_model, progress_callback=_frame_progress
+        )
     else:
         frame_descriptions = []
 
-    # Build metadata dict for the LLM prompt
-    metadata_dict = dataclasses.asdict(metadata)
-
     logger.info("[%s] Generating summary", name)
     summary = generate_summary(
-        video_path=str(video_path),
-        metadata=metadata_dict,
-        transcript=transcript,
         frame_descriptions=frame_descriptions,
+        transcript=transcript,
         model=summary_model,
     )
+    _report("generating_summary")
 
     return VideoCatalogEntry(
         video_path=str(video_path),
@@ -94,8 +111,14 @@ async def process_videos(
         logger.warning("No videos found in %s", folder)
         return []
 
+    # Pre-compute per-video step counts so the TUI knows totals upfront
+    video_steps: dict[Path, int] = {}
+    for video in videos:
+        num_frames = get_frame_count(video)
+        video_steps[video] = 1 + num_frames + 1  # transcribe + frames + summary
+
     if progress_callback:
-        progress_callback(total, "discovering")
+        progress_callback(total, "discovering", steps_map=video_steps)
 
     loop = asyncio.get_running_loop()
     executor = ThreadPoolExecutor(max_workers=max_concurrency)
@@ -107,8 +130,30 @@ async def process_videos(
         nonlocal completed
         async with semaphore:
             try:
+                steps = video_steps[video]
                 if progress_callback:
-                    progress_callback(total, "processing", completed, video.name)
+                    progress_callback(
+                        total,
+                        "processing",
+                        completed=completed,
+                        name=video.name,
+                        phase="transcribing",
+                        current_step=0,
+                        total_steps=steps,
+                    )
+
+                def _video_progress(phase: str, current: int, _total: int) -> None:
+                    if progress_callback:
+                        progress_callback(
+                            total,
+                            "step",
+                            completed=completed,
+                            name=video.name,
+                            phase=phase,
+                            current_step=current,
+                            total_steps=steps,
+                        )
+
                 entry = await loop.run_in_executor(
                     executor,
                     process_single_video,
@@ -118,6 +163,8 @@ async def process_videos(
                     llm_base_url,
                     vision_model,
                     summary_model,
+                    steps,
+                    _video_progress,
                 )
                 completed += 1
                 if progress_callback:

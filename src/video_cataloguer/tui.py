@@ -7,7 +7,7 @@ import threading
 from dataclasses import dataclass
 
 from textual.app import App, ComposeResult
-from textual.containers import Container, ScrollableContainer
+from textual.containers import Container
 from textual.widgets import Footer, Header, Label, Log, ProgressBar, Rule
 
 from video_cataloguer.discovery import discover_videos
@@ -99,14 +99,15 @@ class VideoRow(Container):
         self._status_label.update(f"  {status}")
 
 
-class VideoList(ScrollableContainer):
-    """Scrollable container holding one VideoRow per video."""
+class VideoList(Container):
+    """Container holding one VideoRow per video. Scrollbar appears only when needed."""
 
     DEFAULT_CSS = """
     VideoList {
         height: 1fr;
         border: solid $accent;
         padding: 0;
+        overflow-y: auto;
     }
 """
 
@@ -149,6 +150,7 @@ class CataloguerApp(App):
         height: 1fr;
         text-wrap: wrap;
         max-width: 100%;
+        overflow-y: auto;
     }
 """
 

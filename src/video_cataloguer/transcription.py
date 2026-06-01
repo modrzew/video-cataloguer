@@ -7,8 +7,6 @@ import sys
 import tempfile
 from pathlib import Path
 
-from tqdm import tqdm as tqdm_class  # type: ignore[import-untyped]
-
 from video_cataloguer.models import Transcript, TranscriptSegment
 
 logger = logging.getLogger(__name__)
@@ -77,17 +75,12 @@ def _run_transcribe_subprocess(audio_path: str, model_name: str) -> dict:
 
 def _transcribe_worker(audio_path: str, model_name: str) -> dict:
     """Worker run inside the subprocess — loads model and transcribes."""
+    # Lazy-import whisper — it's a heavy dependency (PyTorch) that should
+    # only be loaded inside the subprocess to avoid fork() issues with the TUI.
     import whisper  # type: ignore[import-untyped]
 
     model = whisper.load_model(model_name)
-    # Disable tqdm to avoid any progress output leaking to the TUI.
-    if hasattr(tqdm_class, "disable"):
-        tqdm_class.disable = True
-    try:
-        return model.transcribe(audio_path, verbose=False)
-    finally:
-        if hasattr(tqdm_class, "disable"):
-            tqdm_class.disable = False
+    return model.transcribe(audio_path, verbose=False)
 
 
 def _extract_audio(video_path: Path, output_path: Path) -> None:

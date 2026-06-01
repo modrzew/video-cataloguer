@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import logging
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -43,9 +45,6 @@ def extract_frames(
 
 def _get_duration(video_path: Path) -> float:
     """Get video duration in seconds using ffprobe."""
-    import json
-    import subprocess
-
     cmd = [
         "ffprobe",
         "-v",
@@ -70,6 +69,8 @@ def _uniform_timestamps(duration: float, count: int) -> list[float]:
 
 def _extract_frame_at(video_path: Path, timestamp: float) -> Image.Image:
     """Extract a single frame at *timestamp* seconds."""
+    # Lazy-import ffmpeg-python — it's a heavy optional dependency that
+    # also triggers PyTorch imports when used alongside Whisper.
     import ffmpeg  # type: ignore[import-untyped]
 
     with tempfile.NamedTemporaryFile(suffix=".jpg", delete=True) as tmp:

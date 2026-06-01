@@ -23,9 +23,8 @@ def extract_metadata(video_path: Path) -> VideoMetadata:
     tags = format_data.get("tags", {})
     recording_date = tags.get("creation_time") or tags.get("date") or None
 
-    # GPS from tags (if embedded)
-    gps_lat = _parse_gps(tags.get("tdef1"))
-    gps_lon = _parse_gps(tags.get("tdef2"))
+    # GPS from ISO-6709 location tag (used by iOS, Android, etc.)
+    gps_lat, gps_lon = _parse_iso6709(tags.get("location"))
 
     width = int(stream.get("width", 0))
     height = int(stream.get("height", 0))
@@ -89,11 +88,40 @@ def _parse_fps(fps_str: str) -> float:
         return 0.0
 
 
-def _parse_gps(value: str | None) -> float | None:
-    """Try to parse a GPS coordinate string to float."""
+def _parse_iso6709(value: str | None) -> tuple[float | None, float | None]:
+    """Parse an ISO-6709 coordinate string like '+37.77-122.41/' into (lat, lon).
+
+    Returns (None, None) if the string cannot be parsed.
+
+    ISO-6709 compact form:
+        [+/-]latitude[+/-]longitude[/altitude]
+        e.g. +37.7749-122.4194/ or +51.5074-001.2561/51h
+    """
     if not value:
-        return None
+        return None, None
+
     try:
-        return float(value)
-    except ValueError, TypeError:
-        return None
+        # Strip trailing altitude component (after '/')
+        coord = value.split("/")[0]
+        if not coord:
+            return None, None
+
+        # Must start with a sign
+        if coord[0] not in "+-":
+            return None, None
+
+        # Find the second sign which separates lat from lon
+        second_sign_idx = -1
+        for i in range(1, len(coord)):
+            if coord[i] in "+-":
+                second_sign_idx = i
+                break
+
+        if second_sign_idx == -1:
+            return None, None
+
+        lat = float(coord[:second_sign_idx])
+        lon = float(coord[second_sign_idx:])
+        return lat, lon
+    except ValueError, IndexError:
+        return None, None

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import threading
 from dataclasses import dataclass
 
 from textual.app import App, ComposeResult
@@ -210,8 +211,13 @@ class _TextualLogHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         msg = self.format(record)
-        with contextlib.suppress(Exception):
-            self.app.call_from_thread(self._write_log, msg)
+        # call_from_thread raises when called from the event-loop thread,
+        # so write directly on the main thread and delegate from workers.
+        if threading.current_thread() is threading.main_thread():
+            self._write_log(msg)
+        else:
+            with contextlib.suppress(Exception):
+                self.app.call_from_thread(self._write_log, msg)
 
     def _write_log(self, msg: str) -> None:
         log = self.app.query_one("#details-log", Log)

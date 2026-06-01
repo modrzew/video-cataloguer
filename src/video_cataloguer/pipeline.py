@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import logging
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -19,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 def process_single_video(
     video_path: Path,
-    whisper_model: str = "tiny",
+    whisper_model: str = "large",
     llm_provider: str = "ollama",
     llm_base_url: str | None = None,
     vision_model: str | None = None,
@@ -73,17 +74,18 @@ async def process_videos(
     folder: str,
     output_dir: str | None = None,
     max_concurrency: int = 2,
-    whisper_model: str = "tiny",
+    whisper_model: str = "large",
     llm_provider: str = "ollama",
     llm_base_url: str | None = None,
     vision_model: str | None = None,
     summary_model: str | None = None,
-    progress_callback=None,
+    progress_callback: Callable[..., None] | None = None,
 ) -> list[VideoCatalogEntry]:
     """Process all videos in *folder* with bounded concurrency.
 
     Each video is processed in a separate thread. Results are saved as
-    Markdown files.
+    Markdown files incrementally — each video is saved as soon as it
+    finishes so a crash doesn't lose completed work.
     """
     videos = discover_videos(folder)
     total = len(videos)
@@ -95,7 +97,7 @@ async def process_videos(
     if progress_callback:
         progress_callback(total, "discovering")
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     executor = ThreadPoolExecutor(max_workers=max_concurrency)
     semaphore = asyncio.Semaphore(max_concurrency)
     results: list[VideoCatalogEntry] = []
@@ -121,6 +123,11 @@ async def process_videos(
                 if progress_callback:
                     progress_callback(total, "done", completed, video.name)
                 results.append(entry)
+                # Save incrementally so a crash doesn't lose completed work
+                try:
+                    save_catalog_entry(entry, output_dir)
+                except Exception as e:
+                    logger.error("Failed to save catalog for %s: %s", video.name, e)
                 return entry
             except Exception as e:
                 logger.error("Failed to process %s: %s", video.name, e, exc_info=True)
@@ -131,13 +138,6 @@ async def process_videos(
 
     tasks = [_process(v) for v in videos]
     await asyncio.gather(*tasks, return_exceptions=True)
-
-    # Save all results
-    for entry in results:
-        try:
-            save_catalog_entry(entry, output_dir)
-        except Exception as e:
-            logger.error("Failed to save catalog for %s: %s", entry.video_path, e)
 
     executor.shutdown(wait=False)
     logger.info("Processed %d / %d videos", len(results), total)

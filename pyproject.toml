@@ -15,7 +15,6 @@ dependencies = [
     "Pillow>=11.0.0",
     "httpx>=0.28.0",
     "click>=8.1.0",
-    "pydantic>=2.10.0",
 ]
 
 [project.scripts]

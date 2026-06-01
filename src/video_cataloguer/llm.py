@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import base64
 import io
+import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
 import httpx
 
-from video_cataloguer.models import FrameDescription, Transcript
+from video_cataloguer.models import FrameDescription, Transcript, _format_time
 
 logger = logging.getLogger(__name__)
 
@@ -90,11 +92,11 @@ def generate_summary(
         return _fallback_summary(video_path, metadata, transcript, frame_descriptions)
 
 
-# --- Ollama provider ---
+# --- Shared frame encoding ---
 
 
-def _ollama_vision(model: str, frames: list[tuple[float, Any]]) -> list[str]:
-    """Send frames to Ollama /api/chat for vision description."""
+def _encode_frames(frames: list[tuple[float, Any]]) -> tuple[list[str], list[float]]:
+    """Encode frames to base64 JPEG and return (b64_strings, timestamps)."""
     images_b64: list[str] = []
     timestamps: list[float] = []
 
@@ -104,13 +106,28 @@ def _ollama_vision(model: str, frames: list[tuple[float, Any]]) -> list[str]:
         images_b64.append(base64.b64encode(buf.getvalue()).decode("ascii"))
         timestamps.append(ts)
 
-    prompt = (
+    return images_b64, timestamps
+
+
+def _build_vision_prompt(frames: list[tuple[float, Any]]) -> str:
+    """Build the vision prompt shared by all providers."""
+    timestamps = [ts for ts, _ in frames]
+    return (
         "You are describing video frames. For each image provided, give a concise "
         "one-sentence description of what is visible. Return exactly one description "
-        "per image, in order.\n\n"
+        "per image, in order. Output a JSON array of strings, one per frame.\n\n"
         f"There are {len(frames)} frames from timestamps: "
         f"{', '.join(f'{t:.1f}s' for t in timestamps)}."
     )
+
+
+# --- Ollama provider ---
+
+
+def _ollama_vision(model: str, frames: list[tuple[float, Any]]) -> list[str]:
+    """Send frames to Ollama /api/chat for vision description."""
+    images_b64, _timestamps = _encode_frames(frames)
+    prompt = _build_vision_prompt(frames)
 
     payload = {
         "model": model,
@@ -153,22 +170,8 @@ def _ollama_text(model: str, prompt: str) -> str:
 
 def _lmstudio_vision(model: str, frames: list[tuple[float, Any]]) -> list[str]:
     """Send frames to LM Studio's OpenAI-compatible /v1/chat/completions."""
-    images_b64: list[str] = []
-    timestamps: list[float] = []
-
-    for ts, img in frames:
-        buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=80)
-        images_b64.append(base64.b64encode(buf.getvalue()).decode("ascii"))
-        timestamps.append(ts)
-
-    prompt = (
-        "You are describing video frames. For each image provided, give a concise "
-        "one-sentence description of what is visible. Return exactly one description "
-        "per image, in order.\n\n"
-        f"There are {len(frames)} frames from timestamps: "
-        f"{', '.join(f'{t:.1f}s' for t in timestamps)}."
-    )
+    images_b64, _timestamps = _encode_frames(frames)
+    prompt = _build_vision_prompt(frames)
 
     # OpenAI format: images embedded in content as image_url objects
     content_parts: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
@@ -231,8 +234,39 @@ def _text_request(model: str, prompt: str) -> str:
 
 
 def _split_descriptions(content: str, count: int) -> list[str]:
-    """Split LLM response into per-frame descriptions."""
-    lines = [line.strip() for line in content.strip().split("\n") if line.strip()]
+    """Split LLM response into per-frame descriptions.
+
+    Tries JSON array first, then falls back to numbered lines (``1.`` / ``1)``),
+    then plain non-empty lines. Pads with a placeholder if the model returned
+    fewer descriptions than requested.
+    """
+    # Strategy 1: JSON array
+    stripped = content.strip()
+    if stripped.startswith("["):
+        try:
+            parsed = json.loads(stripped)
+            if isinstance(parsed, list):
+                descs = [str(d).strip() for d in parsed if str(d).strip()]
+                if descs:
+                    while len(descs) < count:
+                        descs.append("A frame from the video.")
+                    return descs[:count]
+        except json.JSONDecodeError, ValueError:
+            pass
+
+    # Strategy 2: Numbered lines ("1. ...", "1) ...", "1:..." etc.)
+    numbered: list[str] = []
+    for line in content.splitlines():
+        m = re.match(r"^\d+[\.\)\:]\s*(.+)", line.strip())
+        if m:
+            numbered.append(m.group(1).strip())
+    if numbered:
+        while len(numbered) < count:
+            numbered.append("A frame from the video.")
+        return numbered[:count]
+
+    # Strategy 3: Plain non-empty lines (last resort)
+    lines = [line.strip() for line in content.splitlines() if line.strip()]
     while len(lines) < count:
         lines.append("A frame from the video.")
     return lines[:count]
@@ -246,7 +280,7 @@ def _build_summary_prompt(
 ) -> str:
     """Build the prompt for the summary generation LLM call."""
     frame_text = "\n".join(
-        f"- [{_fmt_time(f.timestamp)}] {f.description}" for f in frame_descriptions
+        f"- [{_format_time(f.timestamp)}] {f.description}" for f in frame_descriptions
     )
 
     return f"""You are a video cataloguer. Create a Markdown document describing
@@ -315,12 +349,6 @@ def _fallback_summary(
     return "\n".join(lines)
 
 
-def _fmt_time(seconds: float) -> str:
-    """Format seconds as MM:SS.ms."""
-    minutes, secs = divmod(seconds, 60)
-    return f"{int(minutes):02d}:{secs:05.2f}"
-
-
 def _fmt_duration(seconds: float) -> str:
     """Format seconds as HH:MM:SS."""
     hours, remainder = divmod(seconds, 3600)
@@ -333,8 +361,8 @@ def _fmt_duration(seconds: float) -> str:
 def _fmt_size(bytes_: int) -> str:
     """Format bytes as human-readable size."""
     size = float(bytes_)
-    for unit in ("B", "KB", "MB", "GB"):
+    for unit in ("B", "KB", "MB", "GB", "TB", "PB"):
         if size < 1024:
             return f"{size:.1f} {unit}"
         size /= 1024
-    return f"{bytes_:.1f} TB"
+    return f"{size:.1f} EB"

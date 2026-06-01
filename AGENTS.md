@@ -16,7 +16,7 @@ Run `uv run ty check` and `uv run ruff check`. These will also be run as pre-com
 - **Entry point:** `video_cataloguer.cli:main` (click CLI)
 - **TUI:** Built with textual (>=6.0.0). All UI lives in the package; run `uv run video-cataloguer` to start the app.
 - **Video processing:** `ffmpeg-python` for frame extraction, `openai-whisper` for transcription, `Pillow` for image handling.
-- **Data model:** `pydantic` models for video metadata, transcripts, and frame descriptions.
+- **Data model:** `dataclass` models for video metadata, transcripts, and frame descriptions.
 
 # Gotchas
 

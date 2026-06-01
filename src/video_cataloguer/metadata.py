@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import subprocess
 from pathlib import Path
 
@@ -95,33 +96,12 @@ def _parse_iso6709(value: str | None) -> tuple[float | None, float | None]:
 
     ISO-6709 compact form:
         [+/-]latitude[+/-]longitude[/altitude]
-        e.g. +37.7749-122.4194/ or +51.5074-001.2561/51h
+        e.g. +37.7749-122.4194/, +37.7749-122.4194+010.123/, or +51.5074-001.2561/51h
     """
     if not value:
         return None, None
 
-    try:
-        # Strip trailing altitude component (after '/')
-        coord = value.split("/")[0]
-        if not coord:
-            return None, None
-
-        # Must start with a sign
-        if coord[0] not in "+-":
-            return None, None
-
-        # Find the second sign which separates lat from lon
-        second_sign_idx = -1
-        for i in range(1, len(coord)):
-            if coord[i] in "+-":
-                second_sign_idx = i
-                break
-
-        if second_sign_idx == -1:
-            return None, None
-
-        lat = float(coord[:second_sign_idx])
-        lon = float(coord[second_sign_idx:])
-        return lat, lon
-    except ValueError, IndexError:
-        return None, None
+    nums = re.findall(r"[+-]\d+(?:\.\d+)?", value)
+    if len(nums) >= 2:
+        return float(nums[0]), float(nums[1])
+    return None, None

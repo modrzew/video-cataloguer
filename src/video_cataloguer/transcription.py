@@ -77,9 +77,17 @@ def _transcribe_worker(audio_path: str, model_name: str) -> dict:
     """Worker run inside the subprocess — loads model and transcribes."""
     # Lazy-import whisper — it's a heavy dependency (PyTorch) that should
     # only be loaded inside the subprocess to avoid fork() issues with the TUI.
+    import torch  # type: ignore[import-untyped]
     import whisper  # type: ignore[import-untyped]
 
-    model = whisper.load_model(model_name)
+    if torch.cuda.is_available():
+        device = "cuda"
+    elif torch.backends.mps.is_available():
+        device = "mps"
+    else:
+        device = "cpu"
+
+    model = whisper.load_model(model_name, device=device)
     return model.transcribe(audio_path, verbose=False)
 
 

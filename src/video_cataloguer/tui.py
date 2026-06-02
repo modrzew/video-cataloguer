@@ -4,17 +4,35 @@ import asyncio
 import contextlib
 import logging
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
 from textual.app import App, ComposeResult
 from textual.containers import Container
-from textual.widgets import Footer, Label, Log, ProgressBar, Rule
+from textual.widgets import Footer, Label, Log, Rule
 
 from video_cataloguer.discovery import discover_videos
-from video_cataloguer.frames import get_frame_count
 from video_cataloguer.pipeline import process_videos
 
 logger = logging.getLogger(__name__)
+
+
+# Icon codepoints for each processing stage
+STAGE_ICONS: dict[str, str] = {
+    "metadata": "\ueb6d",
+    "audio": "\uf001",
+    "frames": "\uf03e",
+    "summary": "\ueb26",
+}
+
+SPINNER_CHARS = "⠋⠙⠸⢰⣰⣤⣆⡇"
+
+
+@dataclass(slots=True)
+class StageStatus:
+    """Tracks the state of a single processing stage."""
+
+    state: str = "pending"  # pending | running | done
 
 
 @dataclass
@@ -23,93 +41,104 @@ class VideoProgress:
 
     name: str
     status: str = "pending"  # pending | processing | done | error
-    phase: str = ""
-    current_step: int = 0
-    total_steps: int = 0
     detail: str = ""
+    stages: dict[str, StageStatus] = field(
+        default_factory=lambda: {
+            "metadata": StageStatus("pending"),
+            "audio": StageStatus("pending"),
+            "frames": StageStatus("pending"),
+            "summary": StageStatus("pending"),
+        }
+    )
 
 
 class StatusBanner(Label):
     """Top banner showing overall status."""
 
-    DEFAULT_CSS = """
-    StatusBanner {
-        width: 100%;
-        content-align: center middle;
-        background: $boost;
-        color: $text;
-        padding: 0 1;
-    }
-"""
+    pass  # CSS defined in app-level CSS block
+
+
+class StageIcon(Label):
+    """A single icon that shows pending/running/done state for a processing stage."""
+
+    pass  # CSS defined in app-level CSS block
+
+    def __init__(self, stage_name: str) -> None:
+        super().__init__()
+        self.stage_name = stage_name
+        self._state: str = "pending"
+        self._spinner_index: int = 0
+        self._timer: Any = None
+        self.add_class("pending")
+        self.update(STAGE_ICONS[stage_name])
+
+    def _update_display(self) -> None:
+        icon = STAGE_ICONS.get(self.stage_name, "?")
+        if self._state == "running":
+            self.update(SPINNER_CHARS[self._spinner_index])
+        else:
+            self.update(icon)
+
+    def set_state(self, state: str) -> None:
+        """Change the stage state (pending | running | done)."""
+        if state == self._state:
+            return
+        self._state = state
+        self.remove_class("pending", "running", "done")
+        self.add_class(state)
+        if state == "running":
+            self._start_spinner()
+        else:
+            self._stop_spinner()
+            self._spinner_index = 0
+        self._update_display()
+
+    def _start_spinner(self) -> None:
+        self._stop_spinner()
+        self._timer = self.set_interval(0.1, self._spin)
+
+    def _stop_spinner(self) -> None:
+        if self._timer is not None:
+            with contextlib.suppress(AttributeError):
+                self._timer.remove()
+            self._timer = None
+
+    def _spin(self) -> None:
+        self._spinner_index = (self._spinner_index + 1) % len(SPINNER_CHARS)
+        self._update_display()
 
 
 class VideoRow(Container):
-    """Single row showing a video's filename, progress bar, and status."""
+    """Single row showing a video's filename and per-stage icons."""
 
-    DEFAULT_CSS = """
-    VideoRow {
-        layout: horizontal;
-        height: auto;
-        width: 100%;
-    }
+    pass  # CSS defined in app-level CSS block
 
-    VideoRow .vr-name {
-        width: 1fr;
-        padding: 0 1;
-        content-align: left middle;
-    }
-
-    VideoRow .vr-bar {
-        width: 30;
-        padding: 0 1;
-        content-align: center middle;
-    }
-
-    VideoRow .vr-status {
-        width: 1fr;
-        padding: 0 1;
-        content-align: left middle;
-    }
-"""
-
-    def __init__(self, name: str, total_steps: int) -> None:
+    def __init__(self, name: str) -> None:
         super().__init__()
         self._video_name = name
-        self.total_steps = total_steps
         self._name_label: Label
-        self._bar: ProgressBar
-        self._status_label: Label
+        self._icons: dict[str, StageIcon] = {}
 
     def compose(self) -> ComposeResult:
         self._name_label = Label(f"  {self._video_name}")
-        self._name_label.classes = "vr-name"
+        self._name_label.styles.width = 40
         yield self._name_label
 
-        self._bar = ProgressBar(total=self.total_steps, show_percentage=False, show_eta=False)
-        self._bar.classes = "vr-bar"
-        yield self._bar
+        for stage in ("metadata", "audio", "frames", "summary"):
+            icon = StageIcon(stage)
+            self._icons[stage] = icon
+            yield icon
 
-        self._status_label = Label("")
-        self._status_label.classes = "vr-status"
-        yield self._status_label
-
-    def update(self, current: int, total: int, status: str) -> None:
-        """Update the progress bar and status text."""
-        self._bar.update(progress=current, total=total)
-        self._status_label.update(f"  {status}")
+    def set_stage_state(self, stage: str, state: str) -> None:
+        icon = self._icons.get(stage)
+        if icon:
+            icon.set_state(state)
 
 
 class VideoList(Container):
     """Container holding one VideoRow per video. Scrollbar appears only when needed."""
 
-    DEFAULT_CSS = """
-    VideoList {
-        height: 1fr;
-        border: solid $accent;
-        padding: 0;
-        overflow-y: auto;
-    }
-"""
+    pass  # CSS defined in app-level CSS block
 
     def __init__(
         self,
@@ -121,15 +150,15 @@ class VideoList(Container):
         super().__init__(name=name, id=id, classes=classes, disabled=disabled)
         self.rows: dict[str, VideoRow] = {}
 
-    def add_row(self, name: str, total_steps: int) -> None:
-        row = VideoRow(name, total_steps)
+    def add_row(self, name: str) -> None:
+        row = VideoRow(name)
         self.rows[name] = row
         self.mount(row)
 
-    def update_row(self, name: str, current: int, total: int, status: str) -> None:
+    def set_stage_state(self, name: str, stage: str, state: str) -> None:
         row = self.rows.get(name)
         if row:
-            row.update(current, total, status)
+            row.set_stage_state(stage, state)
 
 
 class CataloguerApp(App):
@@ -138,6 +167,42 @@ class CataloguerApp(App):
     CSS = """
     Screen {
         layout: vertical;
+    }
+
+    StatusBanner {
+        width: 100%;
+        content-align: center middle;
+        background: $boost;
+        color: $text;
+        padding: 0 1;
+    }
+
+    StageIcon {
+        width: 4;
+        padding: 0 1;
+        content-align: center middle;
+        color: gray;
+    }
+
+    StageIcon.running {
+        color: green;
+    }
+
+    StageIcon.done {
+        color: green;
+    }
+
+    VideoRow {
+        layout: horizontal;
+        height: auto;
+        width: 100%;
+    }
+
+    VideoList {
+        height: 1fr;
+        border: solid $accent;
+        padding: 0;
+        overflow-y: auto;
     }
 
     #video-list {
@@ -185,8 +250,6 @@ class CataloguerApp(App):
         self.summary_model = summary_model
 
         self.videos: list[VideoProgress] = []
-        self.show_details = True
-        self.video_steps: dict[str, int] = {}
 
     def compose(self) -> ComposeResult:
         yield StatusBanner("Discovering videos...", id="status-banner")
@@ -221,60 +284,48 @@ class CataloguerApp(App):
             discovered = discover_videos(self.folder)
             self.videos = [VideoProgress(name=v.name) for v in discovered]
 
-            # Pre-compute step counts so the TUI knows totals upfront
-            for i, video in enumerate(discovered):
-                num_frames = get_frame_count(video)
-                steps = 1 + num_frames + 1  # transcribe + frames + summary
-                self.video_steps[self.videos[i].name] = steps
-
             # Create rows in the UI
             for vp in self.videos:
-                video_list.add_row(vp.name, self.video_steps[vp.name])
+                video_list.add_row(vp.name)
 
             banner.update(f"Processing {len(self.videos)} video(s)...")
 
             def progress_callback(
-                total: int,
-                state: str,
-                completed: int = 0,
-                name: str = "",
-                error: str = "",
-                phase: str = "",
-                current_step: int = 0,
-                total_steps: int = 0,
-                steps_map: dict | None = None,
+                *args,
+                **kwargs,
             ) -> None:
-                if state == "discovering" and steps_map is not None:
-                    # Steps map already set above; no-op
-                    pass
-                elif state == "processing":
+                state = kwargs.get("state", args[0] if args else "")
+                completed = kwargs.get("completed", 0)
+                name = kwargs.get("name", "")
+                error = kwargs.get("error", "")
+                stage = kwargs.get("stage", "")
+                if state == "discovering":
+                    pass  # no-op, list already populated
+                elif state == "stage_start":
                     for vp in self.videos:
-                        if vp.name == name:
+                        if vp.name == name and stage in vp.stages:
+                            vp.stages[stage].state = "running"
                             vp.status = "processing"
-                            vp.phase = "transcribing"
-                            vp.current_step = 0
-                            vp.total_steps = self.video_steps.get(name, 0)
-                    self._refresh_video_list()
-                elif state == "step":
+                    video_list.set_stage_state(name, stage, "running")
+                elif state == "stage_done":
                     for vp in self.videos:
-                        if vp.name == name:
-                            vp.phase = phase
-                            vp.current_step = current_step
-                            vp.total_steps = total_steps
-                    self._refresh_video_list()
-                elif state == "done":
+                        if vp.name == name and stage in vp.stages:
+                            vp.stages[stage].state = "done"
+                    video_list.set_stage_state(name, stage, "done")
+                elif state == "video_done":
                     for vp in self.videos:
                         if vp.name == name:
                             vp.status = "done"
-                            vp.current_step = vp.total_steps
-                    self.call_later(banner.update, f"Completed: {completed}/{total}")
-                    self._refresh_video_list()
-                elif state == "error":
+                    self.call_later(banner.update, f"Completed: {completed} video(s)")
+                elif state == "video_error":
                     for vp in self.videos:
                         if vp.name == name:
                             vp.status = "error"
                             vp.detail = error
-                    self._refresh_video_list()
+                    video_list.set_stage_state(name, "metadata", "error")
+                    video_list.set_stage_state(name, "audio", "error")
+                    video_list.set_stage_state(name, "frames", "error")
+                    video_list.set_stage_state(name, "summary", "error")
 
             await process_videos(
                 folder=self.folder,
@@ -286,7 +337,6 @@ class CataloguerApp(App):
                 vision_model=self.vision_model,
                 summary_model=self.summary_model,
                 progress_callback=progress_callback,
-                videos=discovered,
             )
 
             banner.update(f"Done! Processed {len(self.videos)} video(s).")
@@ -294,37 +344,6 @@ class CataloguerApp(App):
         except Exception as e:
             banner.update(f"Error: {e}")
             logger.error("Pipeline failed: %s", e, exc_info=True)
-
-    def _refresh_video_list(self) -> None:
-        """Schedule a refresh of all VideoRow widgets with current progress.
-
-        Defers the actual widget update so the Textual event loop can render
-        between progress callbacks — otherwise rapid synchronous updates get
-        batched and only the final state is painted.
-        """
-        if threading.current_thread() is threading.main_thread():
-            # Called from the event-loop thread: defer to the next tick so
-            # the render cycle runs before we mutate widget state again.
-            self.call_later(self._refresh_video_list_now)
-        else:
-            # Called from a worker thread: marshal back to the main thread.
-            self.call_from_thread(self._refresh_video_list_now)
-
-    def _refresh_video_list_now(self) -> None:
-        """Apply the current progress state to all VideoRow widgets."""
-        video_list = self.query_one("#video-list", VideoList)
-
-        for vp in self.videos:
-            if vp.status == "done":
-                status_label = "Done"
-            elif vp.status == "error":
-                status_label = f"Error: {vp.detail}"
-            elif vp.status == "processing":
-                status_label = _phase_label(vp.phase)
-            else:
-                status_label = "Pending"
-
-            video_list.update_row(vp.name, vp.current_step, vp.total_steps, status_label)
 
     def action_details(self) -> None:
         self.show_details = not self.show_details
@@ -362,13 +381,3 @@ class _TextualLogHandler(logging.Handler):
     def _write_log(self, msg: str) -> None:
         log = self.app.query_one("#details-log", Log)
         log.write(msg + "\n")
-
-
-def _phase_label(phase: str) -> str:
-    """Return a human-readable status label for a processing phase."""
-    labels = {
-        "transcribing": "Transcribing audio",
-        "describing_frames": "Describing video frames",
-        "generating_summary": "Generating summary",
-    }
-    return labels.get(phase, phase)

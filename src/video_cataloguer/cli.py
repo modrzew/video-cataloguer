@@ -19,7 +19,7 @@ from video_cataloguer.tui import CataloguerApp
     "--concurrency",
     type=int,
     default=2,
-    help="Max number of videos processed in parallel (default: 2).",
+    help="Per-type concurrency limit for Whisper and LLM calls (default: 2).",
 )
 @click.option(
     "--whisper-model",

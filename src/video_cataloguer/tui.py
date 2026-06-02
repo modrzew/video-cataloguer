@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 from textual.app import App, ComposeResult
 from textual.containers import Container
-from textual.widgets import Footer, Header, Label, Log, ProgressBar, Rule
+from textual.widgets import Footer, Label, Log, ProgressBar, Rule
 
 from video_cataloguer.discovery import discover_videos
 from video_cataloguer.frames import get_frame_count
@@ -189,12 +189,11 @@ class CataloguerApp(App):
         self.video_steps: dict[str, int] = {}
 
     def compose(self) -> ComposeResult:
-        yield Header()
         yield StatusBanner("Discovering videos...", id="status-banner")
         yield VideoList(id="video-list")
         yield Rule()
         yield Log(id="details-log")
-        yield Footer()
+        yield Footer(show_command_palette=False)
 
     def on_mount(self) -> None:
         self._setup_logging()

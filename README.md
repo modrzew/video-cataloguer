@@ -1,6 +1,6 @@
 # video-cataloguer
 
-<img src="docs/screenshot.png" alt="Application screenshot" width="400">
+<img src="docs/screenshot.png" alt="Application screenshot">
 
 A pipeline that reads videos in a folder, and for each video:
 

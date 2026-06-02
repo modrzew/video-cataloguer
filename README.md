@@ -1,5 +1,7 @@
 # video-cataloguer
 
+<img src="docs/screenshot.png" alt="Application screenshot" width="400">
+
 A pipeline that reads videos in a folder, and for each video:
 
 1. Extracts a few frames and asks a LLM to describe what's in them
